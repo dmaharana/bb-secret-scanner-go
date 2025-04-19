@@ -23,8 +23,8 @@ func NewCSVWriter(filePath string) (*CSVWriter, error) {
 
 	writer := csv.NewWriter(file)
 
-	// Write header
-	header := []string{"project_key", "repository_slug", "commit_id", "commit_date", "commit_author", "filename", "line_number", "secret_type", "secret_value"}
+	// Write header - added end_line for multi-line secrets
+	header := []string{"project_key", "repository_slug", "commit_id", "commit_date", "commit_author", "filename", "line_number", "end_line", "secret_type", "secret_value"}
 	if err := writer.Write(header); err != nil {
 		file.Close()
 		return nil, err
@@ -40,6 +40,12 @@ func NewCSVWriter(filePath string) (*CSVWriter, error) {
 // WriteSecrets writes secrets to the CSV file
 func (w *CSVWriter) WriteSecrets(secrets []scanner.Secret) error {
 	for _, secret := range secrets {
+		// Include the end_line field for multi-line secrets
+		endLine := ""
+		if secret.EndLine > 0 && secret.EndLine != secret.LineNumber {
+			endLine = fmt.Sprintf("%d", secret.EndLine)
+		}
+
 		row := []string{
 			secret.ProjectKey,
 			secret.RepositorySlug,
@@ -48,6 +54,7 @@ func (w *CSVWriter) WriteSecrets(secrets []scanner.Secret) error {
 			secret.CommitAuthor,
 			secret.Filename,
 			fmt.Sprintf("%d", secret.LineNumber),
+			endLine,
 			secret.SecretType,
 			secret.SecretValue,
 		}
