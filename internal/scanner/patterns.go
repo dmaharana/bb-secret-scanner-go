@@ -7,11 +7,11 @@ import (
 // getSecretPatterns returns a map of regex patterns for detecting secrets
 func getSecretPatterns() map[string]*regexp.Regexp {
 	return map[string]*regexp.Regexp{
-		"AWS Access Key":        regexp.MustCompile(`(?i)AKIA[0-9A-Z]{16}`),
-		"AWS Secret Key":        regexp.MustCompile(`(?i)[0-9a-zA-Z/+]{40}`),
-		"GitHub Token":          regexp.MustCompile(`(?i)github[_\-\.]?token[^\s=:]*\s*[:=]\s*['\"]?([0-9a-zA-Z]{35,40})['\"]?`),
-		"Generic API Key":       regexp.MustCompile(`(?i)(api[_\-\.]?key|apikey)[^\s=:]*\s*[:=]\s*['\"]?([0-9a-zA-Z]{16,45})['\"]?`),
-		"Password Assignment":   regexp.MustCompile(`(?i)(password|passwd|pwd)[^\s=:]*\s*[:=]\s*['\"]?([^\s'\"]{8,40})['\"]?`),
+		"AWS Access Key":        regexp.MustCompile(`(?i)\bAKIA[0-9A-Z]{16}\b`),
+		"AWS Secret Key":        regexp.MustCompile(`(?i)\b[0-9a-zA-Z/+]{40}\b`),
+		"GitHub Token":          regexp.MustCompile(`(?i)(?:secret|token|key|auth|github)[^\s=:]*\s*[:=]\s*['"]([0-9a-zA-Z]{35,40})['"]`),
+		"Generic API Key":       regexp.MustCompile(`(?i)(?:secret|token|key|auth|api[_\-\.]?key|apikey)[^\s=:]*\s*[:=]\s*['"]([0-9a-zA-Z!@#$%^&*_-]{16,45})['"]`),
+		"Password Assignment":   regexp.MustCompile(`(?i)(?:secret|password|passwd|pwd)[^\s=:]*\s*[:=]\s*['"]([0-9a-zA-Z!@#$%^&*_-]{6,40})['"]`),
 		"Private Key":           regexp.MustCompile(`(?i)-----BEGIN .*? PRIVATE KEY-----\z`),
 		"Connection String":     regexp.MustCompile(`(?i)(mongodb|mysql|postgresql|postgres)://[^\s<'"]+`),
 		"JWT Token":             regexp.MustCompile(`(?i)ey[0-9a-zA-Z\._-]{10,}\.[0-9a-zA-Z\._-]{10,}\.[0-9a-zA-Z\._-]{10,}`),
@@ -25,5 +25,7 @@ func getSecretPatterns() map[string]*regexp.Regexp {
 		"PGP Private Key":       regexp.MustCompile(`(?i)-----BEGIN PGP PRIVATE KEY BLOCK-----`),
 		"Facebook Access Token": regexp.MustCompile(`(?i)EAACEdEose0cBA[0-9A-Za-z]+`),
 		"Twitter Access Token":  regexp.MustCompile(`(?i)[1-9][0-9]+-[0-9a-zA-Z]{40}`),
+		"Comment Secret":        regexp.MustCompile(`(?i)#.*?(?:secret|password|passwd|pwd|api[_\-\.]?key|token|key|auth)\s*[:=]\s*['"]([0-9a-zA-Z!@#$%^&*_-]{6,40})['"]`),
+		"Base64 Potential":      regexp.MustCompile(`(?i)\b[A-Za-z0-9+/=]{20,}\b`),
 	}
 }

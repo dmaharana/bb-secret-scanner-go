@@ -2,7 +2,11 @@ package scanner
 
 import (
 	"bufio"
+	"encoding/json"
+	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -13,16 +17,17 @@ import (
 
 // Secret represents a detected secret in a file
 type Secret struct {
-	ProjectKey     string
-	RepositorySlug string
-	CommitID       string
-	CommitDate     string
-	CommitAuthor   string
-	Filename       string
-	LineNumber     int
-	SecretType     string
-	SecretValue    string
-	EndLine        int // For multi-line secrets
+	ProjectKey     string  `json:"project_key"`
+	RepositorySlug string  `json:"repository_slug"`
+	CommitID       string  `json:"commit_id"`
+	CommitDate     string  `json:"commit_date"`
+	CommitAuthor   string  `json:"commit_author"`
+	Filename       string  `json:"filename"`
+	LineNumber     int     `json:"line_number"`
+	SecretType     string  `json:"secret_type"`
+	SecretValue    string  `json:"secret_value"`
+	Confidence     float64 `json:"confidence"`
+	EndLine        int     `json:"end_line,omitempty"` // For multi-line secrets
 }
 
 // SecretFileInfo contains metadata about a file being scanned
@@ -47,6 +52,58 @@ func NewFileScanner(detector *SecretDetector) *FileScanner {
 	}
 }
 
+// getGitRepoInfo retrieves Git repository information for a given file path
+func getGitRepoInfo(filePath string) (string, string, string, string, string) {
+	// Default values if Git info is unavailable
+	projectKey := "local"
+	repoSlug := "local"
+	commitID := "local"
+	commitDate := time.Now().Format("2006-01-02 15:04:05")
+	commitAuthor := "local"
+
+	// Find the Git repository root
+	dir := filepath.Dir(filePath)
+	for dir != "/" && dir != "." {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+
+	// Extract repository slug from the directory name
+	if dir != "/" && dir != "." {
+		repoSlug = filepath.Base(dir)
+	}
+
+	// Extract project key from parent directory (one level up)
+	if parentDir := filepath.Dir(dir); parentDir != "/" && parentDir != "." {
+		projectKey = filepath.Base(parentDir)
+	}
+
+	// Run Git commands to get commit information
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	if output, err := cmd.Output(); err == nil {
+		commitID = strings.TrimSpace(string(output))
+	}
+
+	// Get the latest commit date and author for the file
+	cmd = exec.Command("git", "log", "-1", "--pretty=%ci|%an <%ae>", filePath)
+	cmd.Dir = dir
+	if output, err := cmd.Output(); err == nil {
+		parts := strings.SplitN(strings.TrimSpace(string(output)), "|", 2)
+		if len(parts) == 2 {
+			// Parse commit date
+			if t, err := time.Parse("2006-01-02 15:04:05 -0700", parts[0]); err == nil {
+				commitDate = t.Format("2006-01-02 15:04:05")
+			}
+			commitAuthor = parts[1]
+		}
+	}
+
+	return projectKey, repoSlug, commitID, commitDate, commitAuthor
+}
+
 // ScanFile scans a single file for secrets
 func (s *FileScanner) ScanFile(filePath string) ([]Secret, error) {
 	// skip if path has .git in it
@@ -59,12 +116,15 @@ func (s *FileScanner) ScanFile(filePath string) ([]Secret, error) {
 	}
 	defer file.Close()
 
+	// Get Git repository information
+	projectKey, repoSlug, commitID, commitDate, commitAuthor := getGitRepoInfo(filePath)
+
 	fileInfo := SecretFileInfo{
-		ProjectKey:     "local",
-		RepositorySlug: "local",
-		CommitID:       "local",
-		CommitDate:     time.Now().Format("2006-01-02 15:04:05"),
-		CommitAuthor:   "local",
+		ProjectKey:     projectKey,
+		RepositorySlug: repoSlug,
+		CommitID:       commitID,
+		CommitDate:     commitDate,
+		CommitAuthor:   commitAuthor,
 		Filename:       filePath,
 	}
 
@@ -102,7 +162,13 @@ func (s *FileScanner) scanContent(file *os.File, fileInfo SecretFileInfo) ([]Sec
 		}
 
 		lineSecrets := s.detector.DetectSecrets(line, lineNum, fileInfo)
-		singleLineSecrets = append(singleLineSecrets, lineSecrets...)
+		for _, secret := range lineSecrets {
+			if secret.Confidence < 50 {
+				log.Printf("Skipped low-confidence secret at %s:%d: %s (Confidence: %.2f)", fileInfo.Filename, lineNum, secret.SecretValue, secret.Confidence)
+				continue
+			}
+			singleLineSecrets = append(singleLineSecrets, secret)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -110,7 +176,15 @@ func (s *FileScanner) scanContent(file *os.File, fileInfo SecretFileInfo) ([]Sec
 	}
 
 	// Combine all secrets
-	return append(singleLineSecrets, multilineSecrets...), nil
+	allSecrets := append(singleLineSecrets, multilineSecrets...)
+
+	// Output as JSON
+	jsonOutput, err := json.MarshalIndent(allSecrets, "", "  ")
+	if err == nil {
+		log.Printf("Secrets found in %s: %s", fileInfo.Filename, string(jsonOutput))
+	}
+
+	return allSecrets, nil
 }
 
 // scanMultilineSecrets scans for secrets that span multiple lines
@@ -216,6 +290,12 @@ func detectMultilineSecret(content, startMarker, endMarker, secretType string, f
 			linesBeforeStart := strings.Count(content[:secretStart], "\n") + 1
 			linesBeforeEnd := strings.Count(content[:secretEnd], "\n") + 1
 
+			confidence := calculateConfidenceScore(secretValue, secretValue, false)
+			if confidence < 50 {
+				log.Printf("Skipped low-confidence multiline secret at %s:%d: %s (Confidence: %.2f)", fileInfo.Filename, linesBeforeStart, truncateSecretValue(secretValue), confidence)
+				continue
+			}
+
 			secrets = append(secrets, Secret{
 				ProjectKey:     fileInfo.ProjectKey,
 				RepositorySlug: fileInfo.RepositorySlug,
@@ -227,6 +307,7 @@ func detectMultilineSecret(content, startMarker, endMarker, secretType string, f
 				EndLine:        linesBeforeEnd,
 				SecretType:     secretType,
 				SecretValue:    truncateSecretValue(secretValue),
+				Confidence:     confidence,
 			})
 
 			regions = append(regions, Region{
@@ -272,7 +353,7 @@ func (s *DirectoryScanner) ScanDirectory(dirPath string) ([]Secret, error) {
 	for _, filePath := range files {
 		secrets, err := s.fileScanner.ScanFile(filePath)
 		if err != nil {
-			// Log error but continue with next file
+			log.Printf("Error scanning %s: %v", filePath, err)
 			continue
 		}
 		allSecrets = append(allSecrets, secrets...)
@@ -347,7 +428,13 @@ func (s *BitbucketScanner) ScanBitbucketFile(projectKey, repoSlug, commitID, fil
 		}
 
 		lineSecrets := s.detector.DetectSecrets(line, lineNum, fileInfo)
-		singleLineSecrets = append(singleLineSecrets, lineSecrets...)
+		for _, secret := range lineSecrets {
+			if secret.Confidence < 50 {
+				log.Printf("Skipped low-confidence secret at %s:%d: %s (Confidence: %.2f)", fileInfo.Filename, lineNum, secret.SecretValue, secret.Confidence)
+				continue
+			}
+			singleLineSecrets = append(singleLineSecrets, secret)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -355,7 +442,15 @@ func (s *BitbucketScanner) ScanBitbucketFile(projectKey, repoSlug, commitID, fil
 	}
 
 	// Combine all secrets
-	return append(singleLineSecrets, multilineSecrets...), nil
+	allSecrets := append(singleLineSecrets, multilineSecrets...)
+
+	// Output as JSON
+	jsonOutput, err := json.MarshalIndent(allSecrets, "", "  ")
+	if err == nil {
+		log.Printf("Secrets found in %s: %s", fileInfo.Filename, string(jsonOutput))
+	}
+
+	return allSecrets, nil
 }
 
 // scanMultilineSecrets scans for secrets that span multiple lines in Bitbucket files
